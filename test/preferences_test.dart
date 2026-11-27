@@ -28,4 +28,27 @@ void main() {
 
     await preferences.setDarkMode(true);
   });
+
+  test('playback state persists for the next launch', () async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = AppPreferences.instance;
+    await preferences.load();
+
+    await preferences.savePlaybackState(
+      trackId: 'local_track',
+      positionMs: 125000,
+      wasPlaying: true,
+    );
+
+    expect(preferences.savedPlaybackTrackId, 'local_track');
+    expect(preferences.savedPlaybackPositionMs, 125000);
+    expect(preferences.savedPlaybackWasPlaying, isTrue);
+
+    await preferences.savePlaybackState(
+      trackId: 'local_track',
+      positionMs: 125000,
+      wasPlaying: false,
+    );
+    expect(preferences.savedPlaybackWasPlaying, isFalse);
+  });
 }

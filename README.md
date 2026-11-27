@@ -16,6 +16,9 @@ animated cover-art treatment and a modern, compact listening interface.
 - Includes shuffle, a persistent light/dark theme, and saved EQ settings.
 - Adds a compact mini-player with a Hero transition, plus a playlist bottom
   sheet with the active track highlighted.
+- Starts paused on first launch and restores the selected track, playback
+  position, and play/pause state on later launches. Imported audio files and
+  the playlist are kept in app-local storage.
 - Adapts the layout for compact phones, landscape screens, and wider displays.
 - Uses animated, track-colored vinyl artwork, live playback indicators, and a
   spectrum display; repeat mode is a compact All/One/Off control.

@@ -19,7 +19,7 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   static const _accent = Color(0xFF00F5FF);
 
   Color _dominantColor = _accent;
@@ -35,6 +35,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _playbackState = ValueNotifier(_playerService.isPlaying);
     _playPauseController = AnimationController(
       vsync: this,
@@ -52,12 +53,17 @@ class _PlayerScreenState extends State<PlayerScreen>
     _playlistManager.restoreShuffle(AppPreferences.instance.shuffleEnabled);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _playerService.initEngine();
-      if (_playlistManager.currentTrack != null &&
-          !_playerService.isPlaying &&
-          !_playerService.isPaused) {
-        await _playerService.playTrack(_playlistManager.currentTrack!);
-      }
+      await _playlistManager.restorePlayback();
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _playlistManager.persistPlaybackStateNow();
+    }
   }
 
   bool get _isDark => AppPreferences.instance.isDarkMode;
@@ -92,6 +98,8 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _playlistManager.persistPlaybackStateNow();
     _playPauseController.dispose();
     _auroraController.dispose();
     _playbackState.dispose();
@@ -378,7 +386,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (result.success) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Playing: ${result.trackTitle ?? "Audio"}'),
+          content: Text(
+            'Playing: ${result.trackTitle ?? "Audio"}',
+            style: TextStyle(color: _primaryText),
+          ),
           backgroundColor: _surface,
           behavior: SnackBarBehavior.floating,
         ),
@@ -386,7 +397,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     } else if (result.errorMessage != null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(result.errorMessage!),
+          content: Text(
+            result.errorMessage!,
+            style: const TextStyle(color: Colors.white),
+          ),
           backgroundColor: const Color(0xFF8F3535),
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
@@ -665,7 +679,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                             _playlistManager.tracks.isNotEmpty) {
                           _playlistManager.playTrackAtIndex(0);
                         } else {
-                          _playerService.togglePlayPause();
+                          _playlistManager.togglePlayPause();
                         }
                       },
                       icon: AnimatedIcon(
@@ -874,7 +888,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                   ),
                   IconButton(
                     iconSize: 28,
-                    onPressed: _playerService.togglePlayPause,
+                    onPressed: _playlistManager.togglePlayPause,
                     icon: Icon(
                       _playerService.isPlaying
                           ? Icons.pause_circle_filled_rounded
@@ -1153,7 +1167,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                                     visualDensity: VisualDensity.compact,
                                     onPressed: () {
                                       if (isCurrent) {
-                                        _playerService.togglePlayPause();
+                                        _playlistManager.togglePlayPause();
                                       } else {
                                         _playlistManager.playTrackAtIndex(
                                           index,
@@ -1164,9 +1178,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                                       isCurrent && isPlaying
                                           ? Icons.pause_rounded
                                           : Icons.play_arrow_rounded,
-                                      color: isCurrent
-                                          ? _activeAccent
-                                          : _muted,
+                                      color: isCurrent ? _activeAccent : _muted,
                                     ),
                                   );
                                 },

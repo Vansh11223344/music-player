@@ -1,9 +1,12 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/audio_track.dart';
 import 'app_preferences.dart';
 import 'audio_player_service.dart';
@@ -35,6 +38,7 @@ class PlaylistManager extends ChangeNotifier {
   PlaylistManager._internal() {
     _initDefaultTracks();
     _playerService.onTrackFinished = _handleTrackFinished;
+    _playerService.addListener(_schedulePlaybackStateSave);
   }
 
   final AudioPlayerService _playerService = AudioPlayerService();
@@ -44,6 +48,8 @@ class PlaylistManager extends ChangeNotifier {
   bool _isShuffleEnabled = false;
   final List<int> _shuffleHistory = [];
   int _shuffleHistoryCursor = -1;
+  Timer? _playbackSaveTimer;
+  Directory? _libraryDirectory;
 
   List<AudioTrack> get tracks => List.unmodifiable(_tracks);
   int get currentIndex => _currentIndex;
@@ -101,6 +107,142 @@ class PlaylistManager extends ChangeNotifier {
     ]);
   }
 
+  Future<void> restoreLibrary() async {
+    try {
+      final directory = await _getLibraryDirectory();
+      final manifest = File(
+        '${directory.path}${Platform.pathSeparator}library.json',
+      );
+      if (!await manifest.exists()) return;
+
+      final json =
+          jsonDecode(await manifest.readAsString()) as Map<String, dynamic>;
+      final importedTracks = <AudioTrack>[];
+      for (final value in json['tracks'] as List<dynamic>? ?? []) {
+        final track = AudioTrack.fromJson(value as Map<String, dynamic>);
+        if (!track.isAsset && await File(track.path).exists()) {
+          importedTracks.add(track);
+        }
+      }
+      _tracks.addAll(importedTracks);
+
+      final selectedTrackId = json['currentTrackId'] as String?;
+      final selectedIndex = _tracks.indexWhere(
+        (track) => track.id == selectedTrackId,
+      );
+      if (selectedIndex >= 0) _currentIndex = selectedIndex;
+      notifyListeners();
+    } catch (error) {
+      debugPrint('Could not restore the local music library: $error');
+    }
+  }
+
+  Future<Directory> _getLibraryDirectory() async {
+    final cachedDirectory = _libraryDirectory;
+    if (cachedDirectory != null) return cachedDirectory;
+    final supportDirectory = await getApplicationSupportDirectory();
+    final directory = Directory(
+      '${supportDirectory.path}${Platform.pathSeparator}imported_audio',
+    );
+    await directory.create(recursive: true);
+    _libraryDirectory = directory;
+    return directory;
+  }
+
+  Future<void> _saveLibrary() async {
+    try {
+      final directory = await _getLibraryDirectory();
+      final manifest = File(
+        '${directory.path}${Platform.pathSeparator}library.json',
+      );
+      final importedTracks = _tracks
+          .where((track) => !track.isAsset)
+          .map((track) => track.toJson())
+          .toList();
+      await manifest.writeAsString(
+        jsonEncode({
+          'tracks': importedTracks,
+          'currentTrackId': currentTrack?.id,
+        }),
+        flush: true,
+      );
+    } catch (error) {
+      debugPrint('Could not save the local music library: $error');
+    }
+  }
+
+  void _schedulePlaybackStateSave() {
+    if (_playerService.currentTrack == null ||
+        (!_playerService.isPlaying && !_playerService.isPaused) ||
+        _playbackSaveTimer != null) {
+      return;
+    }
+    _playbackSaveTimer = Timer(const Duration(seconds: 1), () {
+      _playbackSaveTimer = null;
+      persistPlaybackStateNow();
+    });
+  }
+
+  void persistPlaybackStateNow() {
+    _playbackSaveTimer?.cancel();
+    _playbackSaveTimer = null;
+    final track = _playerService.currentTrack;
+    if (track == null) return;
+    unawaited(
+      AppPreferences.instance.savePlaybackState(
+        trackId: track.id,
+        positionMs: _playerService.currentPosition.inMilliseconds,
+        wasPlaying: _playerService.isPlaying,
+      ),
+    );
+  }
+
+  Future<void> togglePlayPause() async {
+    if (_playerService.currentTrack == null) {
+      final track = currentTrack;
+      if (track != null) await _playerService.playTrack(track);
+    } else {
+      _playerService.togglePlayPause();
+    }
+    persistPlaybackStateNow();
+  }
+
+  Future<void> restorePlayback() async {
+    if (_playerService.currentTrack != null) return;
+
+    final savedTrackId = AppPreferences.instance.savedPlaybackTrackId;
+    if (savedTrackId == null) {
+      final track = currentTrack;
+      if (track != null) {
+        await _playerService.playTrack(track, startPaused: true);
+      }
+      return;
+    }
+
+    final savedIndex = _tracks.indexWhere((track) => track.id == savedTrackId);
+    if (savedIndex < 0) {
+      final track = currentTrack;
+      if (track != null) {
+        await _playerService.playTrack(track, startPaused: true);
+      }
+      return;
+    }
+
+    _currentIndex = savedIndex;
+    final track = _tracks[_currentIndex];
+    notifyListeners();
+    final wasPlaying = AppPreferences.instance.savedPlaybackWasPlaying;
+    final success = await _playerService.playTrack(
+      track,
+      startPaused: !wasPlaying,
+    );
+    if (!success) return;
+    _playerService.seek(
+      Duration(milliseconds: AppPreferences.instance.savedPlaybackPositionMs),
+    );
+    persistPlaybackStateNow();
+  }
+
   /// Toggle loop mode: all -> one -> none -> all
   void toggleLoopMode() {
     switch (_loopMode) {
@@ -123,6 +265,7 @@ class PlaylistManager extends ChangeNotifier {
     _currentIndex = index;
     if (_isShuffleEnabled) _recordShuffleTrack(index);
     notifyListeners();
+    unawaited(_saveLibrary());
     await _playerService.playTrack(_tracks[_currentIndex]);
   }
 
@@ -156,6 +299,7 @@ class PlaylistManager extends ChangeNotifier {
       _currentIndex = 0; // Wrap around
     }
     notifyListeners();
+    unawaited(_saveLibrary());
     await _playerService.playTrack(_tracks[_currentIndex]);
   }
 
@@ -179,6 +323,7 @@ class PlaylistManager extends ChangeNotifier {
       _recordShuffleTrack(_currentIndex);
     }
     notifyListeners();
+    unawaited(_saveLibrary());
     await _playerService.playTrack(_tracks[_currentIndex]);
   }
 
@@ -251,49 +396,67 @@ class PlaylistManager extends ChangeNotifier {
 
       final List<AudioTrack> newTracks = [];
       for (final file in pickedFiles) {
-        if (file.path != null && file.path!.isNotEmpty) {
-          final filePath = file.path!;
-          final fileObj = File(filePath);
-
-          if (!await fileObj.exists()) {
-            debugPrint('Selected file does not exist on disk: $filePath');
-            continue;
-          }
-
-          final fileName = file.name;
-          final ext = file.extension?.toUpperCase() ?? 'AUDIO';
-          final fallbackTitle = fileName.contains('.')
-              ? fileName.substring(0, fileName.lastIndexOf('.'))
-              : fileName;
-          String? metadataTitle;
-          String? metadataArtist;
-          Uint8List? artworkBytes;
-          try {
-            final metadata = await Isolate.run(
-              () => _readTrackMetadata(filePath),
-            );
-            metadataTitle = metadata.title;
-            metadataArtist = metadata.artist;
-            artworkBytes = metadata.artwork;
-          } catch (error) {
-            debugPrint('Could not read audio metadata for $fileName: $error');
-          }
-
-          final track = AudioTrack(
-            id: 'local_${DateTime.now().microsecondsSinceEpoch}_${file.name}',
-            title: metadataTitle?.trim().isNotEmpty == true
-                ? metadataTitle!.trim()
-                : fallbackTitle,
-            artist: metadataArtist?.trim().isNotEmpty == true
-                ? metadataArtist!.trim()
-                : 'Local Device File',
-            path: filePath,
-            isAsset: false,
-            format: ext,
-            artworkBytes: artworkBytes,
-          );
-          newTracks.add(track);
+        final sourcePath = file.path;
+        if (sourcePath == null || sourcePath.isEmpty) {
+          debugPrint('No readable file path returned for ${file.name}.');
+          continue;
         }
+        final sourceFile = File(sourcePath);
+        if (!await sourceFile.exists()) {
+          debugPrint('Selected file does not exist on disk: $sourcePath');
+          continue;
+        }
+
+        final id = 'local_${DateTime.now().microsecondsSinceEpoch}';
+        final nameExtension = file.name.lastIndexOf('.') > 0
+            ? file.name.substring(file.name.lastIndexOf('.') + 1)
+            : null;
+        final extensionCandidate = (file.extension ?? nameExtension ?? 'audio')
+            .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
+            .toLowerCase();
+        final extension = extensionCandidate.isEmpty
+            ? 'audio'
+            : extensionCandidate;
+        final directory = await _getLibraryDirectory();
+        final storedFile = File(
+          '${directory.path}${Platform.pathSeparator}$id.$extension',
+        );
+        await sourceFile.copy(storedFile.path);
+        final filePath = storedFile.path;
+
+        final fileName = file.name;
+        final ext = extension.toUpperCase();
+        final fallbackTitle = fileName.contains('.')
+            ? fileName.substring(0, fileName.lastIndexOf('.'))
+            : fileName;
+        String? metadataTitle;
+        String? metadataArtist;
+        Uint8List? artworkBytes;
+        try {
+          final metadata = await Isolate.run(
+            () => _readTrackMetadata(filePath),
+          );
+          metadataTitle = metadata.title;
+          metadataArtist = metadata.artist;
+          artworkBytes = metadata.artwork;
+        } catch (error) {
+          debugPrint('Could not read audio metadata for $fileName: $error');
+        }
+
+        final track = AudioTrack(
+          id: id,
+          title: metadataTitle?.trim().isNotEmpty == true
+              ? metadataTitle!.trim()
+              : fallbackTitle,
+          artist: metadataArtist?.trim().isNotEmpty == true
+              ? metadataArtist!.trim()
+              : 'Local Device File',
+          path: filePath,
+          isAsset: false,
+          format: ext,
+          artworkBytes: artworkBytes,
+        );
+        newTracks.add(track);
       }
 
       if (newTracks.isEmpty) {
@@ -306,6 +469,7 @@ class PlaylistManager extends ChangeNotifier {
       _tracks.addAll(newTracks);
       // Auto-select and play the first imported track
       _currentIndex = _tracks.length - newTracks.length;
+      await _saveLibrary();
       notifyListeners();
 
       final playSuccess = await _playerService.playTrack(
@@ -325,23 +489,25 @@ class PlaylistManager extends ChangeNotifier {
         );
       }
     } catch (e) {
-      debugPrint('Error picking audio files: $e');
+      debugPrint('Error importing audio files: $e');
       return PickResult(
         success: false,
-        errorMessage: 'Failed to open file picker: $e',
+        errorMessage: 'Failed to import audio files: $e',
       );
     }
   }
 
   /// Remove track at index
-  void removeTrack(int index) {
+  Future<void> removeTrack(int index) async {
     if (index < 0 || index >= _tracks.length) return;
     if (_tracks.length <= 1) return; // Keep at least one
 
     final bool removingCurrent = index == _currentIndex;
-    _tracks.removeAt(index);
+    final removedTrack = _tracks.removeAt(index);
 
-    if (_currentIndex >= _tracks.length) {
+    if (index < _currentIndex) {
+      _currentIndex--;
+    } else if (_currentIndex >= _tracks.length) {
       _currentIndex = _tracks.length - 1;
     }
     if (_isShuffleEnabled) {
@@ -352,9 +518,22 @@ class PlaylistManager extends ChangeNotifier {
     }
 
     notifyListeners();
+    await _saveLibrary();
 
     if (removingCurrent) {
-      _playerService.playTrack(_tracks[_currentIndex]);
+      await _playerService.playTrack(_tracks[_currentIndex]);
+    }
+
+    final directory = await _getLibraryDirectory();
+    final removedFile = File(removedTrack.path);
+    if (!removedTrack.isAsset &&
+        removedFile.parent.path == directory.path &&
+        await removedFile.exists()) {
+      try {
+        await removedFile.delete();
+      } catch (error) {
+        debugPrint('Could not delete imported audio file: $error');
+      }
     }
   }
 }

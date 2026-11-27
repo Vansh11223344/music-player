@@ -3,12 +3,14 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'services/app_preferences.dart';
 import 'services/audio_player_service.dart';
+import 'services/playlist_manager.dart';
 import 'ui/player_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final preferences = AppPreferences.instance;
   await preferences.load();
+  await PlaylistManager().restoreLibrary();
   final playerService = AudioPlayerService();
   final lowGain = preferences.savedLowGain;
   final midGain = preferences.savedMidGain;

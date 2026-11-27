@@ -160,7 +160,7 @@ class AudioPlayerService extends ChangeNotifier {
   }
 
   /// Play an AudioTrack. Returns true on success, false if file could not be decoded.
-  Future<bool> playTrack(AudioTrack track) async {
+  Future<bool> playTrack(AudioTrack track, {bool startPaused = false}) async {
     await initEngine();
 
     // Stop current track
@@ -199,15 +199,18 @@ class AudioPlayerService extends ChangeNotifier {
 
       // Play with looping = false so we can advance automatically
       _currentHandle = SoLoud.instance.play(source);
-      _isPlaying = true;
-      _isPaused = false;
+      if (startPaused) {
+        SoLoud.instance.setPause(_currentHandle!, true);
+      }
+      _isPlaying = !startPaused;
+      _isPaused = startPaused;
 
       // Ensure EQ gains remain applied to newly active voice stream
       _applyBandGain(0, _lowGain);
       _applyBandGain(1, _midGain);
       _applyBandGain(2, _highGain);
 
-      _startPositionTimer();
+      if (!startPaused) _startPositionTimer();
       notifyListeners();
       return true;
     } catch (e) {

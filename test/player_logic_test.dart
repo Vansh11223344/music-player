@@ -1,9 +1,36 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_music_eq/models/audio_track.dart';
 import 'package:flutter_music_eq/models/eq_preset.dart';
 import 'package:flutter_music_eq/services/audio_player_service.dart';
 import 'package:flutter_music_eq/services/playlist_manager.dart';
 
 void main() {
+  test('AudioTrack serialization preserves imported track metadata', () {
+    final track = AudioTrack(
+      id: 'local_track',
+      title: 'Saved Song',
+      artist: 'Saved Artist',
+      path: r'C:\music\saved-song.mp3',
+      isAsset: false,
+      format: 'MP3',
+      duration: const Duration(minutes: 3),
+      artworkBytes: Uint8List.fromList([1, 2, 3]),
+    );
+
+    final restored = AudioTrack.fromJson(track.toJson());
+
+    expect(restored.id, track.id);
+    expect(restored.title, track.title);
+    expect(restored.artist, track.artist);
+    expect(restored.path, track.path);
+    expect(restored.isAsset, isFalse);
+    expect(restored.format, track.format);
+    expect(restored.duration, track.duration);
+    expect(restored.artworkBytes, orderedEquals([1, 2, 3]));
+  });
+
   group('AudioPlayerService Math & Presets', () {
     final service = AudioPlayerService();
 
